@@ -1,0 +1,113 @@
+# Bank screener configuration.
+
+quarters:
+  from: 2019Q4
+  to: latest          # or an explicit quarter such as 2025Q2
+
+paths:
+  raw_cdr: data/raw/cdr
+  raw_ubpr: data/raw/ubpr
+  raw_mdrm: data/raw/mdrm
+  db: data/bank.duckdb
+  exports: data/exports
+  fed_funds: ref/fed_funds.csv
+  validation_report: validation_report.md
+  code_verification_report: code_verification.md
+
+# Every filer is loaded into DuckDB (UBPR peer context and sanity checks need
+# the full population). Exports are limited to banks whose most recent
+# filing type is in this list.
+scope:
+  filing_types: ["051"]
+
+assumptions:
+  tax_rate: 0.21
+
+deposit_beta:
+  start: 2021Q4
+  end: 2024Q2
+
+# Field spec.
+#   item:           MDRM item code (4 chars, no prefix). null = not yet identified;
+#                   the field is skipped until the dictionary check resolves it.
+#   prefixes:       coalesce order; the first non-null value wins.
+#   sum_prefixes:   added on top of the coalesced value when present (foreign
+#                   offices on the 031; 051 filers never report them).
+#   kind:           stock | ytd | ratio | flag
+#   verify:         true = most likely to have changed (CECL, 2021 revisions);
+#                   checked first in the code verification report.
+# All codes are UNVERIFIED until `bank verify-codes` runs against the MDRM
+# dictionary; `bank build` refuses to run until they pass.
+defaults:
+  balance_prefixes: [RCFD, RCON]
+  income_prefixes: [RIAD]
+  capital_prefixes: [RCOA]
+
+fields:
+  # --- Balance sheet (RC) ---
+  - {name: total_assets,        item: "2170", schedule: RC,  kind: stock}
+  - {name: total_deposits,      item: "2200", schedule: RC,  kind: stock, prefixes: [RCON], sum_prefixes: [RCFN]}
+  - {name: total_equity,        item: "3210", schedule: RC,  kind: stock}
+  - {name: goodwill,            item: "3163", schedule: RC,  kind: stock}
+  - {name: other_intangibles,   item: "0426", schedule: RC,  kind: stock}
+  - {name: aoci,                item: "B530", schedule: RC,  kind: stock}
+  - {name: total_loans,         item: "2122", schedule: RC,  kind: stock}
+  - {name: allowance_loans,     item: "3123", schedule: RC,  kind: stock}
+  - {name: afs_fair_value,      item: "1773", schedule: RC,  kind: stock}
+  - {name: htm_net,             item: "JJ34", schedule: RC,  kind: stock, verify: true}
+  - {name: oreo,                item: "2150", schedule: RC,  kind: stock}
+
+  # --- Securities (RC-B) ---
+  - {name: htm_amortized_cost,  item: "1754", schedule: RCB, kind: stock, verify: true}
+  - {name: htm_fair_value,      item: "1771", schedule: RCB, kind: stock, verify: true}
+  # Memo 2 maturity / repricing buckets: codes to be identified from the dictionary.
+
+  # --- Deposits (RC-E / RC / RC-O) ---
+  - {name: nonint_deposits,     item: "6631", schedule: RC,  kind: stock, prefixes: [RCON], sum_prefixes: [RCFN]}
+  - {name: brokered_deposits,   item: "2365", schedule: RCE, kind: stock, prefixes: [RCON]}
+  - {name: reciprocal_deposits, item: "JH83", schedule: RCE, kind: stock, prefixes: [RCON], verify: true}
+  - {name: time_dep_100_250k,   item: "J473", schedule: RCE, kind: stock, prefixes: [RCON], verify: true}
+  - {name: time_dep_over_250k,  item: "J474", schedule: RCE, kind: stock, prefixes: [RCON], verify: true}
+  - {name: uninsured_deposits,  item: "5597", schedule: RCO, kind: stock, prefixes: [RCON]}
+
+  # --- Income (RI), year-to-date ---
+  - {name: interest_income,     item: "4107", schedule: RI,  kind: ytd}
+  - {name: interest_expense,    item: "4073", schedule: RI,  kind: ytd}
+  - {name: net_interest_income, item: "4074", schedule: RI,  kind: ytd}
+  - {name: provision,           item: "JJ33", schedule: RI,  kind: ytd, verify: true}
+  - {name: nonint_income,       item: "4079", schedule: RI,  kind: ytd}
+  - {name: nonint_expense,      item: "4093", schedule: RI,  kind: ytd}
+  - {name: htm_realized_gl,     item: "3521", schedule: RI,  kind: ytd}
+  - {name: afs_realized_gl,     item: "3196", schedule: RI,  kind: ytd}
+  - {name: net_income,          item: "4340", schedule: RI,  kind: ytd}
+  - {name: dep_int_exp_trans,   item: "4508", schedule: RI,  kind: ytd, verify: true}
+  - {name: dep_int_exp_savings, item: "0093", schedule: RI,  kind: ytd, verify: true}
+  - {name: dep_int_exp_time_a,  item: "HK03", schedule: RI,  kind: ytd, verify: true}
+  - {name: dep_int_exp_time_b,  item: "HK04", schedule: RI,  kind: ytd, verify: true}
+
+  # --- Charge-offs (RI-B), year-to-date ---
+  - {name: charge_offs,         item: "4635", schedule: RIB, kind: ytd}
+  - {name: recoveries,          item: "4605", schedule: RIB, kind: ytd}
+
+  # --- Past due / nonaccrual (RC-N) ---
+  - {name: past_due_30_89,      item: "1406", schedule: RCN, kind: stock}
+  - {name: past_due_90_plus,    item: "1407", schedule: RCN, kind: stock}
+  - {name: nonaccrual,          item: "1403", schedule: RCN, kind: stock}
+
+  # --- Loans (RC-C) ---
+  - {name: construction_1_4,    item: "F158", schedule: RCC, kind: stock, prefixes: [RCON]}
+  - {name: construction_other,  item: "F159", schedule: RCC, kind: stock, prefixes: [RCON]}
+  - {name: multifamily,         item: "1460", schedule: RCC, kind: stock, prefixes: [RCON]}
+  - {name: nfnr_owner_occ,      item: "F160", schedule: RCC, kind: stock, prefixes: [RCON]}
+  - {name: nfnr_non_owner_occ,  item: "F161", schedule: RCC, kind: stock, prefixes: [RCON]}
+  - {name: cre_not_secured_re,  item: "2746", schedule: RCC, kind: stock}
+
+  # --- Capital (RC-R) ---
+  - {name: tier1_leverage_ratio, item: "7204", schedule: RCR, kind: ratio, prefixes: [RCOA]}
+  - {name: cet1_ratio,           item: "P793", schedule: RCR, kind: ratio, prefixes: [RCOA], verify: true}
+  - {name: total_capital_ratio,  item: "7205", schedule: RCR, kind: ratio, prefixes: [RCOA]}
+  # Tier 1 capital, total risk-based capital, CBLR election flag and CBLR
+  # ratio: codes to be identified from the dictionary.
+  - {name: tier1_capital,        item: null,   schedule: RCR, kind: stock, prefixes: [RCOA], verify: true}
+  - {name: total_rb_capital,     item: null,   schedule: RCR, kind: stock, prefixes: [RCOA], verify: true}
+  - {name: cblr_election,        item: null,   schedule: RCR, kind: flag,  prefixes: [RCOA], verify: true}
